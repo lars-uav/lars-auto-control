@@ -18,6 +18,7 @@ from queue import Queue
 from dataclasses import dataclass
 from typing import List, Optional
 from enum import Enum
+import pandas as pd
 
 @dataclass
 class MovementCommand:
@@ -339,6 +340,7 @@ class VideoStreamClient:
         self.fps = 0
         self.frame_count = 0
         self.start_time = time.time()
+        self.capture_url = None
         
         try:
             self.grid_manager = GridOverlayManager()
@@ -358,6 +360,9 @@ class VideoStreamClient:
             self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
             self.client_socket.settimeout(1.0)
+            
+            # Set capture endpoint URL
+            self.capture_url = f"http://{host}:8002/capture"
             
             self.connected = True
             self.frame_count = 0
@@ -382,6 +387,29 @@ class VideoStreamClient:
                 self.frame_queue.get_nowait()
             except queue.Empty:
                 break
+
+    def capture_and_classify(self):
+        """Trigger image capture and classification on the server"""
+        if not self.capture_url:
+            st.error("Capture URL not configured")
+            return None
+            
+        try:
+            response = requests.post(self.capture_url, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+            
+            # Add timestamp to result
+            if 'error' not in result:
+                result['time'] = time.strftime('%H:%M:%S')
+                # Add to session state history
+                if 'classification_history' in st.session_state:
+                    st.session_state['classification_history'].append(result)
+                    
+            return result
+        except Exception as e:
+            st.error(f"Capture failed: {str(e)}")
+            return {'error': str(e)}
 
     def receive_frame(self):
         try:
@@ -425,6 +453,8 @@ class VideoStreamClient:
                 self.frame_queue.put_nowait(frame)
             else:
                 time.sleep(0.01)
+
+                
 def calculate_movements(start_pos: tuple[int, int], start_orientation: str, end_pos: tuple[int, int], grid_dim: tuple[int, int]):
     """Wrapper for automation function"""
     movements, final_theta = automate_inputs((start_pos, start_orientation), end_pos, grid_dim)
@@ -541,7 +571,6 @@ def add_automation_panel():
             st.error(f"Error calculating path: {str(e)}")
 
 def main():
-
     st.set_page_config(page_title="Robot Control Center", layout="wide")
     st.title("Robot Control Center")
     
@@ -556,6 +585,8 @@ def main():
         st.session_state['overlay_enabled'] = False
     if 'current_state' not in st.session_state:
         st.session_state['current_state'] = GridState.TRANSPARENT
+    if 'classification_history' not in st.session_state:
+        st.session_state['classification_history'] = []
     
     # Layout
     col1, col2 = st.columns([2, 1])
@@ -667,6 +698,55 @@ def main():
     # Video Display (left column)
     with col1:
         if st.session_state['video_client'].connected:
+            # Create two columns for buttons
+            button_col1, button_col2 = st.columns([1, 3])
+            
+            # Add capture button in first column
+            with button_col1:
+                if st.button("📸 Capture", use_container_width=True):
+                    with st.spinner('Capturing and analyzing image...'):
+                        result = st.session_state['video_client'].capture_and_classify()
+                        if result:
+                            if 'error' in result:
+                                st.error(f"Classification failed: {result['error']}")
+                            else:
+                                # Create a success box with classification results
+                                with st.container():
+                                    st.success("Image captured and analyzed!")
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.metric("Classification", result['class'])
+                                        st.metric("Confidence", f"{result['confidence']*100:.1f}%")
+                                    with col2:
+                                        st.metric("Inference Time", f"{result['inference_time_ms']:.1f}ms")
+                                        
+            # Add an expander for classification history in second column
+            with button_col2:
+                with st.expander("Classification History", expanded=False):
+                    if st.session_state['classification_history']:
+                        history_df = pd.DataFrame(st.session_state['classification_history'])
+                        st.dataframe(
+                            history_df[['time', 'class', 'confidence', 'inference_time_ms']],
+                            hide_index=True,
+                            column_config={
+                                'time': 'Time',
+                                'class': 'Class',
+                                'confidence': st.column_config.NumberColumn(
+                                    'Confidence',
+                                    format="%.1f%%",
+                                    help="Classification confidence score"
+                                ),
+                                'inference_time_ms': st.column_config.NumberColumn(
+                                    'Inference Time',
+                                    format="%.1f ms",
+                                    help="Model inference time"
+                                )
+                            }
+                        )
+                    else:
+                        st.write("No classifications yet")
+            
+            # Video display
             video_container = st.empty()
             
             while st.session_state['video_client'].connected:
