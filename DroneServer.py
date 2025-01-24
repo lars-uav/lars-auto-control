@@ -67,10 +67,13 @@ class DroneServer:
             # Resize to model input shape
             img = cv2.resize(img, (480, 640))
             
-            # Run inference directly on the image
+            # Run inference
             start_time = time.time()
-            output_data = self.interpreter.invoke(img)
+            self.interpreter.invoke()
             inference_time = (time.time() - start_time) * 1000  # ms
+            
+            # Get output data from interpreter
+            output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
             
             # Get prediction
             prediction = np.argmax(output_data[0])
