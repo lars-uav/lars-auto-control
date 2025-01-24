@@ -27,7 +27,6 @@ class DroneServer:
         # Load TFLite model
         self.interpreter = self.load_tflite_model()
         if self.interpreter:
-            # Get model details
             self.input_details = self.interpreter.get_input_details()
             self.output_details = self.interpreter.get_output_details()
             
@@ -113,55 +112,56 @@ class DroneServer:
             result = self.classify_image(image_path)
             result['image_path'] = image_path
             return result
+        
+    def send_frame(self, client_socket, frame, compress_params=[cv2.IMWRITE_JPEG_QUALITY, 50]):
+        """Compress and send a single frame"""
+        _, encoded_frame = cv2.imencode('.jpg', frame, compress_params)
+        data = pickle.dumps(encoded_frame)
+        
+        try:
+            message_size = struct.pack("L", len(data))
+            client_socket.sendall(message_size + data)
+            return True
+        except (ConnectionResetError, BrokenPipeError, socket.error):
+            return False
 
-def send_frame(client_socket, frame, compress_params=[cv2.IMWRITE_JPEG_QUALITY, 50]):
-    """Compress and send a single frame"""
-    # Compress frame to JPEG format
-    _, encoded_frame = cv2.imencode('.jpg', frame, compress_params)
-    data = pickle.dumps(encoded_frame)
-    
-    # Send frame size followed by data
-    try:
-        message_size = struct.pack("L", len(data))
-        client_socket.sendall(message_size + data)
-        return True
-    except (ConnectionResetError, BrokenPipeError, socket.error):
-        return False
+    def handle_client(self, client_socket, addr):
+        """Handle individual client connection"""
+        print(f'Handling connection from {addr}')
+        frame_count = 0
+        start_time = time.time()
+        
+        try:
+            while True:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print("Failed to capture frame!")
+                    break
 
-def handle_client(client_socket, addr, cap):
-    """Handle individual client connection"""
-    print(f'Handling connection from {addr}')
-    frame_count = 0
-    start_time = time.time()
-    
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to capture frame!")
-                break
+                # Store latest frame for capture requests
+                with self.frame_lock:
+                    self.latest_frame = frame.copy()
 
-            # Resize frame to reduce bandwidth usage
-            frame = cv2.resize(frame, (640, 480))
+                # Resize frame for streaming
+                frame = cv2.resize(frame, (640, 480))
+                    
+                frame_count += 1
+                if frame_count % 30 == 0:
+                    elapsed_time = time.time() - start_time
+                    fps = frame_count / elapsed_time
+                    print(f"Streaming to {addr} at {fps:.2f} FPS")
                 
-            frame_count += 1
-            if frame_count % 30 == 0:  # Print FPS every 30 frames
-                elapsed_time = time.time() - start_time
-                fps = frame_count / elapsed_time
-                print(f"Streaming to {addr} at {fps:.2f} FPS")
-            
-            if not send_frame(client_socket, frame):
-                print(f"\nClient {addr} disconnected")
-                break
-            
-            # Small sleep to prevent overwhelming the network
-            time.sleep(0.001)
-            
-    except Exception as e:
-        print(f"\nError with client {addr}: {e}")
-    finally:
-        client_socket.close()
-        print(f"Connection closed for {addr}")
+                if not self.send_frame(client_socket, frame):
+                    print(f"\nClient {addr} disconnected")
+                    break
+                
+                time.sleep(0.001)
+                
+        except Exception as e:
+            print(f"\nError with client {addr}: {e}")
+        finally:
+            client_socket.close()
+            print(f"Connection closed for {addr}")
 
 def start_stream_server(host='0.0.0.0', port=8000):
     global drone_server
@@ -191,16 +191,16 @@ def start_stream_server(host='0.0.0.0', port=8000):
         print(f"Flask server started on port 8002")
         
         # Start video streaming server
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind((host, port))
-        server_socket.listen(5)
+        drone_server.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        drone_server.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        drone_server.server_socket.bind((host, port))
+        drone_server.server_socket.listen(5)
         print(f"Video streaming server listening on {host}:{port}")
         
         while True:
-            client_socket, addr = server_socket.accept()
+            client_socket, addr = drone_server.server_socket.accept()
             client_thread = threading.Thread(
-                target=handle_client,
+                target=drone_server.handle_client,  # Use the class method
                 args=(client_socket, addr)
             )
             client_thread.daemon = True
@@ -213,8 +213,8 @@ def start_stream_server(host='0.0.0.0', port=8000):
     finally:
         if drone_server.cap:
             drone_server.cap.release()
-        if 'server_socket' in locals():
-            server_socket.close()
+        if drone_server.server_socket:
+            drone_server.server_socket.close()
 
 @app.route('/')
 def home():
