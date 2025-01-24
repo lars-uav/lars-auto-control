@@ -362,7 +362,15 @@ class VideoStreamClient:
             self.client_socket.settimeout(1.0)
             
             # Set capture endpoint URL
-            self.capture_url = f"http://{host}:8002/capture"
+            self.capture_url = f"http://{host}:8002"
+            
+            # Test the capture endpoint
+            try:
+                response = requests.get(f"{self.capture_url}/")
+                if response.status_code != 200:
+                    st.warning("Capture server is not responding. Capture functionality may not work.")
+            except:
+                st.warning("Could not connect to capture server. Capture functionality may not work.")
             
             self.connected = True
             self.frame_count = 0
@@ -395,7 +403,16 @@ class VideoStreamClient:
             return None
             
         try:
-            response = requests.post(self.capture_url, timeout=10)
+            # First check if the server is responding
+            try:
+                health_check = requests.get(f"{self.capture_url}/", timeout=2)
+                health_check.raise_for_status()
+            except Exception as e:
+                st.error(f"Capture server is not responding. Please ensure the server is running on port 8002.\nError: {str(e)}")
+                return None
+            
+            # If server is responding, try capture
+            response = requests.post(f"{self.capture_url}/capture", timeout=10)
             response.raise_for_status()
             result = response.json()
             
@@ -407,8 +424,18 @@ class VideoStreamClient:
                     st.session_state['classification_history'].append(result)
                     
             return result
+        except requests.exceptions.RequestException as e:
+            error_msg = str(e)
+            if "Connection refused" in error_msg:
+                st.error("Could not connect to capture server. Please ensure:\n"
+                        "1. The server is running\n"
+                        "2. Port 8002 is open and accessible\n"
+                        "3. No firewall is blocking the connection")
+            else:
+                st.error(f"Capture failed: {error_msg}")
+            return {'error': error_msg}
         except Exception as e:
-            st.error(f"Capture failed: {str(e)}")
+            st.error(f"Unexpected error during capture: {str(e)}")
             return {'error': str(e)}
 
     def receive_frame(self):
@@ -454,7 +481,7 @@ class VideoStreamClient:
             else:
                 time.sleep(0.01)
 
-                
+
 def calculate_movements(start_pos: tuple[int, int], start_orientation: str, end_pos: tuple[int, int], grid_dim: tuple[int, int]):
     """Wrapper for automation function"""
     movements, final_theta = automate_inputs((start_pos, start_orientation), end_pos, grid_dim)

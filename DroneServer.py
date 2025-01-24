@@ -5,11 +5,14 @@ import struct
 import sys
 import time
 import threading
-import os
+from flask import Flask, jsonify
 import numpy as np
-import datetime
+from datetime import datetime
+import os
 import tensorflow as tf
 
+app = Flask(__name__)
+drone_server = None
 class DroneServer:
     def __init__(self):
         self.cap = None
@@ -161,49 +164,70 @@ def handle_client(client_socket, addr, cap):
         print(f"Connection closed for {addr}")
 
 def start_stream_server(host='0.0.0.0', port=8000):
+    global drone_server
     print("Initializing camera...")
-    cap = cv2.VideoCapture(0)
+    drone_server = DroneServer()
+    drone_server.cap = cv2.VideoCapture(0)
     
-    # Optimize camera settings for streaming
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer delay
+    # Optimize camera settings
+    drone_server.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    drone_server.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    drone_server.cap.set(cv2.CAP_PROP_FPS, 30)
+    drone_server.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     
-    if not cap.isOpened():
+    if not drone_server.cap.isOpened():
         print("Failed to open camera!")
         return
         
     print(f"Camera opened successfully!")
-    print(f"Resolution: {cap.get(cv2.CAP_PROP_FRAME_WIDTH)}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}")
     
-    # Create socket server
     try:
+        # Start Flask server in a thread
+        flask_thread = threading.Thread(
+            target=lambda: app.run(host='0.0.0.0', port=8002, threaded=True)
+        )
+        flask_thread.daemon = True
+        flask_thread.start()
+        print(f"Flask server started on port 8002")
+        
+        # Start video streaming server
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_socket.bind((host, port))
         server_socket.listen(5)
-        print(f"Server listening on {host}:{port}")
-    except Exception as e:
-        print(f"Socket error: {e}")
-        cap.release()
-        return
+        print(f"Video streaming server listening on {host}:{port}")
         
-    # Accept multiple clients
-    try:
         while True:
             client_socket, addr = server_socket.accept()
             client_thread = threading.Thread(
                 target=handle_client,
-                args=(client_socket, addr, cap)
+                args=(client_socket, addr)
             )
             client_thread.daemon = True
             client_thread.start()
+            
     except KeyboardInterrupt:
         print("\nShutting down server...")
+    except Exception as e:
+        print(f"Error: {str(e)}")
     finally:
-        cap.release()
-        server_socket.close()
+        if drone_server.cap:
+            drone_server.cap.release()
+        if 'server_socket' in locals():
+            server_socket.close()
+
+@app.route('/')
+def home():
+    return jsonify({'status': 'ok'})
+
+@app.route('/capture', methods=['POST'])
+def handle_capture():
+    global drone_server
+    if drone_server is None:
+        return jsonify({'error': 'Server not initialized'}), 500
+    
+    result = drone_server.capture_and_classify()
+    return jsonify(result)
 
 if __name__ == "__main__":
     start_stream_server()
