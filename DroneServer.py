@@ -30,14 +30,10 @@ class DroneServer:
             self.input_details = self.interpreter.get_input_details()
             self.output_details = self.interpreter.get_output_details()
             
-    def load_tflite_model(self):
-        try:
-            interpreter = tf.interpreter.TFLiteInterpreter(model_path='model.tflite')
-            interpreter.allocate_tensors()
-            return interpreter
-        except Exception as e:
-            print(f"Error loading TFLite model: {e}")
-            return None
+    def load_tflite_model(tflite_file):
+        interpreter = tf.lite.Interpreter(model_path="model.tflite")
+        interpreter.allocate_tensors()
+        return interpreter
 
     def preprocess_image(self, img):
         """Preprocess image according to model requirements"""
@@ -60,40 +56,39 @@ class DroneServer:
 
     def classify_image(self, image_path):
         try:
-            # Read image
+            if self.interpreter is None:
+                return {'error': 'Model not loaded'}
+
+            # Read and preprocess image
             img = cv2.imread(image_path)
             if img is None:
-                raise Exception("Failed to read image")
-
-            # Preprocess image
-            processed_img = self.preprocess_image(img)
-
-            # Set input tensor
-            self.interpreter.set_tensor(self.input_details[0]['index'], processed_img)
-
-            # Run inference
+                return {'error': 'Failed to read image'}
+                
+            # Resize to model input shape
+            img = cv2.resize(img, (480, 640))
+            
+            # Run inference directly on the image
             start_time = time.time()
-            self.interpreter.invoke()
-            inference_time = (time.time() - start_time) * 1000  # Convert to milliseconds
-
-            # Get output
-            output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
-
-            # Process output
-            prediction = np.argmax(output_data)
+            output_data = self.interpreter.invoke(img)
+            inference_time = (time.time() - start_time) * 1000  # ms
+            
+            # Get prediction
+            prediction = np.argmax(output_data[0])
             confidence = float(output_data[0][prediction])
-
-            # Map prediction to class label (replace with your classes)
-            classes = ['class1', 'class2', 'class3']  # Update with your actual classes
+            
+            # Map prediction to class label (update classes as per your model)
+            classes = ['class1', 'class2', 'class3', 'class4', 'class5', 
+                      'class6', 'class7', 'class8', 'class9', 'class10']
+            
             result = {
                 'class': classes[prediction],
                 'confidence': confidence,
                 'inference_time_ms': inference_time
             }
             return result
-            
+
         except Exception as e:
-            print(f"Error during classification: {e}")
+            print(f"Error during classification: {str(e)}")
             return {'error': str(e)}
 
     def capture_and_classify(self):
