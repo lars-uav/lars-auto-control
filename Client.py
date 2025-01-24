@@ -725,53 +725,48 @@ def main():
     # Video Display (left column)
     with col1:
         if st.session_state['video_client'].connected:
-            # Create two columns for buttons
-            button_col1, button_col2 = st.columns([1, 3])
+            # Add capture button above video
+            if st.button("📸 Capture", use_container_width=True):
+                with st.spinner('Capturing and analyzing image...'):
+                    result = st.session_state['video_client'].capture_and_classify()
+                    if result:
+                        if 'error' in result:
+                            st.error(f"Classification failed: {result['error']}")
+                        else:
+                            st.success("Image captured and analyzed!")
+                            st.metric("Classification", result['class'])
+                            st.metric("Confidence", f"{result['confidence']:.1f}%")
+                            st.metric("Inference Time", f"{result['inference_time_ms']:.1f}ms")
+                            
+                            # Add to history
+                            timestamp = time.strftime('%H:%M:%S')
+                            st.session_state['classification_history'].append({
+                                'time': timestamp,
+                                **result
+                            })
             
-            # Add capture button in first column
-            with button_col1:
-                if st.button("📸 Capture", use_container_width=True):
-                    with st.spinner('Capturing and analyzing image...'):
-                        result = st.session_state['video_client'].capture_and_classify()
-                        if result:
-                            if 'error' in result:
-                                st.error(f"Classification failed: {result['error']}")
-                            else:
-                                # Create a success box with classification results
-                                with st.container():
-                                    st.success("Image captured and analyzed!")
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        st.metric("Classification", result['class'])
-                                        st.metric("Confidence", f"{result['confidence']*100:.1f}%")
-                                    with col2:
-                                        st.metric("Inference Time", f"{result['inference_time_ms']:.1f}ms")
-                                        
-            # Add an expander for classification history in second column
-            with button_col2:
+            # Show classification history
+            if st.session_state['classification_history']:
                 with st.expander("Classification History", expanded=False):
-                    if st.session_state['classification_history']:
-                        history_df = pd.DataFrame(st.session_state['classification_history'])
-                        st.dataframe(
-                            history_df[['time', 'class', 'confidence', 'inference_time_ms']],
-                            hide_index=True,
-                            column_config={
-                                'time': 'Time',
-                                'class': 'Class',
-                                'confidence': st.column_config.NumberColumn(
-                                    'Confidence',
-                                    format="%.1f%%",
-                                    help="Classification confidence score"
-                                ),
-                                'inference_time_ms': st.column_config.NumberColumn(
-                                    'Inference Time',
-                                    format="%.1f ms",
-                                    help="Model inference time"
-                                )
-                            }
-                        )
-                    else:
-                        st.write("No classifications yet")
+                    history_df = pd.DataFrame(st.session_state['classification_history'])
+                    st.dataframe(
+                        history_df[['time', 'class', 'confidence', 'inference_time_ms']],
+                        hide_index=True,
+                        column_config={
+                            'time': 'Time',
+                            'class': 'Class',
+                            'confidence': st.column_config.NumberColumn(
+                                'Confidence',
+                                format="%.1f%%",
+                                help="Classification confidence score"
+                            ),
+                            'inference_time_ms': st.column_config.NumberColumn(
+                                'Inference Time',
+                                format="%.1f ms",
+                                help="Model inference time"
+                            )
+                        }
+                    )
             
             # Video display
             video_container = st.empty()
