@@ -5,6 +5,111 @@ import struct
 import sys
 import time
 import threading
+import os
+import numpy as np
+import datetime
+import tensorflow as tf
+
+class DroneServer:
+    def __init__(self):
+        self.cap = None
+        self.server_socket = None
+        self.latest_frame = None
+        self.frame_lock = threading.Lock()
+        
+        # Set up image capture directory
+        self.capture_dir = "captured_images"
+        os.makedirs(self.capture_dir, exist_ok=True)
+        
+        # Load TFLite model
+        self.interpreter = self.load_tflite_model()
+        if self.interpreter:
+            # Get model details
+            self.input_details = self.interpreter.get_input_details()
+            self.output_details = self.interpreter.get_output_details()
+            
+    def load_tflite_model(self):
+        try:
+            interpreter = tf.interpreter.TFLiteInterpreter(model_path='model.tflite')
+            interpreter.allocate_tensors()
+            return interpreter
+        except Exception as e:
+            print(f"Error loading TFLite model: {e}")
+            return None
+
+    def preprocess_image(self, img):
+        """Preprocess image according to model requirements"""
+        # Resize to model input size
+        img = cv2.resize(img, (640, 480))
+        
+        # Convert BGR to RGB
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Normalize to [0,1]
+        img = img.astype(np.float32) / 255.0
+        
+        # Add batch dimension
+        img = np.expand_dims(img, axis=0)
+        
+        # Transpose to (batch_size, channels, height, width)
+        img = np.transpose(img, (0, 3, 1, 2))
+        
+        return img
+
+    def classify_image(self, image_path):
+        try:
+            # Read image
+            img = cv2.imread(image_path)
+            if img is None:
+                raise Exception("Failed to read image")
+
+            # Preprocess image
+            processed_img = self.preprocess_image(img)
+
+            # Set input tensor
+            self.interpreter.set_tensor(self.input_details[0]['index'], processed_img)
+
+            # Run inference
+            start_time = time.time()
+            self.interpreter.invoke()
+            inference_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+
+            # Get output
+            output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
+
+            # Process output
+            prediction = np.argmax(output_data)
+            confidence = float(output_data[0][prediction])
+
+            # Map prediction to class label (replace with your classes)
+            classes = ['class1', 'class2', 'class3']  # Update with your actual classes
+            result = {
+                'class': classes[prediction],
+                'confidence': confidence,
+                'inference_time_ms': inference_time
+            }
+            return result
+            
+        except Exception as e:
+            print(f"Error during classification: {e}")
+            return {'error': str(e)}
+
+    def capture_and_classify(self):
+        with self.frame_lock:
+            if self.latest_frame is None:
+                return {'error': 'No frame available'}
+
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            image_path = os.path.join(self.capture_dir, f'capture_{timestamp}.jpg')
+
+            # Save image
+            cv2.imwrite(image_path, self.latest_frame)
+
+            # Run classification
+            result = self.classify_image(image_path)
+            result['image_path'] = image_path
+            return result
 
 def send_frame(client_socket, frame, compress_params=[cv2.IMWRITE_JPEG_QUALITY, 50]):
     """Compress and send a single frame"""
